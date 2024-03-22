@@ -5,8 +5,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 
-n_samples = 20
-
 def plot_perue_bw(ifname, ofname):
     df = pd.read_csv(ifname)
     n_slice = 3
@@ -49,18 +47,17 @@ def plot_perue_ran(ifname, ofname):
     plt.savefig(ofname)
 
 
-def plot_scheme_compare(f1: str, f2: str, f3: str, ofname: str, is_ran: True):
+def plot_scheme_compare(fnames: list, ofname: str, is_ran: True):
     """
     Plot per-UE ran&data_rate comparison across multiple schemes
     """
     dfs = []
-    if not os.path.exists(f2):
+    if not os.path.exists(fnames[0]):
         return
-    dfs.append(pd.read_csv(f2))
-    dfs.append(pd.read_csv(f3))
-    # dfs.append( pd.read_csv(f3) )
-    # schemes = ["Origin", "NaiveHO", "SmartHO"]
-    schemes = ["Origin", "NaiveHO"]
+    for fname in fnames:
+        dfs.append(pd.read_csv(fname))
+    schemes = ["NaiveHO", "UnawareHO"]
+    # schemes = ["Origin", "NaiveHO", "UnawareHO"]
     n_slices = dfs[0]["slice"].max() + 1
     fig, ax = plt.subplots(figsize=(20, 5))
     bar_width = 0.3
@@ -75,12 +72,10 @@ def plot_scheme_compare(f1: str, f2: str, f3: str, ofname: str, is_ran: True):
                 else:
                     slice_ue_metric.append(float(row["ran"]) * float(row["channel"]))
             data_sort = sorted(slice_ue_metric)
-            x_array = np.arange(ue_begin, ue_begin + len(data_sort)) + bar_width * (
-                i - 1
-            )
-            ax.bar(
-                x_array, data_sort, width=bar_width, label=schemes[i] + "-S" + str(sid)
-            )
+            x_array = np.arange(ue_begin, ue_begin + len(data_sort)) + bar_width * (i - 0.5)
+            ax.bar(x_array, data_sort,
+                   width=bar_width,
+                   label=schemes[i] + "-S" + str(sid))
             ue_begin += len(data_sort)
     ax.set_xlabel("UE ID")
     if is_ran:
@@ -134,14 +129,16 @@ def get_metric_value(fname: str, lowb: float, upperb: float, is_ran: True):
     """
     df = pd.read_csv(fname)
     n_slices = df["slice"].max() + 1
+    allue_metrics = []
     for sid in range(n_slices):
-        ue_metrics = []
+        slice_metrics = []
         slice_ues = df[df["slice"] == sid]
         for _, row in slice_ues.iterrows():
             metric = row["ran"] if is_ran else row["ran"] * row["channel"]
-            ue_metrics.append(metric)
-        ue_metrics = get_sublist(sorted(ue_metrics), lowb, upperb)
-    return sorted(ue_metrics)
+            slice_metrics.append(metric)
+        slice_metrics = get_sublist(sorted(slice_metrics), lowb, upperb)
+        allue_metrics = allue_metrics + slice_metrics
+    return sorted(allue_metrics)
 
 
 def get_sameue_improve(f1: str, f2: str, lowb: float, upperb: float, is_ran: True):
@@ -222,8 +219,6 @@ def plot_pfmetric_gain(ofname):
             naive_pf_array.append(metrics[0][j])
             smart_pf_array.append(metrics[1][j])
     sort_gain = sorted(gain_array)
-    print(sort_gain)
-    print(len(sort_gain))
     cdf = np.linspace(0, 1, len(sort_gain))
     fig, axs = plt.subplots(1, 2, figsize=(12, 5))
     axs[0].plot(sort_gain, cdf)
@@ -240,27 +235,22 @@ def plot_pfmetric_gain(ofname):
 
 
 def plot_absvalue_multi_samples(
-    sys1: int, sys2: int, sys3: int, ofname: str, is_ran: bool, lowb: float, upperb: float
+    prefixes: list, labels: list, ofname: str, is_ran: bool, lowb: float, upperb: float
 ):
+    line_styles = ["solid", "dotted", "dashed", "dashdot"]
     fig, ax = plt.subplots(figsize=(8, 6))
-    scheme1_metrics = []
-    scheme2_metrics = []
-    scheme3_metrics = []
+    scheme_metrics = [[] for i in range(len(prefixes))]
     for i in range(n_samples):
-        if not os.path.exists(SDIR + PREFIXES[sys1] + str(i) + ".csv"):
+        if not os.path.exists(SDIR + prefixes[0] + str(i) + ".csv"):
             continue
-        s1_metrics = get_metric_value(SDIR + PREFIXES[sys1] + str(i) + ".csv", lowb, upperb, is_ran)
-        s2_metrics = get_metric_value(SDIR + PREFIXES[sys2] + str(i) + ".csv", lowb, upperb, is_ran)
-        s3_metrics = get_metric_value(SDIR + PREFIXES[sys3] + str(i) + ".csv", lowb, upperb, is_ran)
-        scheme1_metrics = scheme1_metrics + s1_metrics
-        scheme2_metrics = scheme2_metrics + s2_metrics
-        scheme3_metrics = scheme3_metrics + s3_metrics
-    ax.ecdf(scheme1_metrics, label=LABELS[sys1])
-    ax.ecdf(scheme2_metrics, label=LABELS[sys2])
-    ax.ecdf(scheme3_metrics, label=LABELS[sys3])
+        for j, prefix in enumerate(prefixes):
+            metrics = get_metric_value(SDIR + prefix + str(i) + ".csv", lowb, upperb, is_ran)
+            scheme_metrics[j] = scheme_metrics[j] + metrics
+    for j, label in enumerate(labels):
+        ax.ecdf(scheme_metrics[j], label=label, linestyle=line_styles[j])
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1))
     ax.set_xlim(left=0)
-    ax.legend()
+    ax.legend(loc="lower right")
     if is_ran:
         ax.set_xlabel("RAN allocation")
     else:
@@ -270,36 +260,35 @@ def plot_absvalue_multi_samples(
 
 
 def plot_improve_multi_samples(
-    sys1: int, sys2: int, sys3: int, ofname: str, is_ran: bool, lowb: float, upperb: float
+    basic_id: int, prefixes: list, labels: list, ofname: str, is_ran: bool, lowb: float, upperb: float
 ):
     """
     Plot the CDF graph of the metric improvement from sys1 to sys2 and sys3
     """
+    line_styles = [ "dashdot", "solid", "dotted", "dashed"]
     fig, ax = plt.subplots(figsize=(8, 6))
-    all_improve1 = []
-    all_improve2 = []
+    all_improves = [[] for i in range(len(prefixes))]
     for i in range(n_samples):
-        if not os.path.exists(SDIR + PREFIXES[sys1] + str(i) + ".csv"):
+        if not os.path.exists(SDIR + prefixes[basic_id] + str(i) + ".csv"):
             continue
-        improve1 = get_sameue_improve(
-            SDIR + PREFIXES[sys1] + str(i) + ".csv",
-            SDIR + PREFIXES[sys2] + str(i) + ".csv",
-            lowb, upperb, is_ran
-        )
-        improve2 = get_sameue_improve(
-            SDIR + PREFIXES[sys1] + str(i) + ".csv",
-            SDIR + PREFIXES[sys3] + str(i) + ".csv",
-            lowb, upperb, is_ran
-        )
-        all_improve1 = all_improve1 + improve1
-        all_improve2 = all_improve2 + improve2
-    ax.ecdf(sorted(all_improve1), label="Origin->NaiveHO")
-    ax.ecdf(sorted(all_improve2), label="Origin->SmartHO")
+        for j, prefix in enumerate(prefixes):
+            improve = get_sameue_improve(
+                  SDIR + PREFIXES[basic_id] + str(i) + ".csv",
+                  SDIR + prefix + str(i) + ".csv",
+                  lowb, upperb, is_ran)
+            all_improves[j] = all_improves[j] + improve
+    max_value = 0
+    for j, label in enumerate(labels):
+        if j != basic_id:
+          all_improves[j] = sorted(all_improves[j])
+          ax.ecdf(all_improves[j], label=labels[basic_id] + "->" + label, linestyle=line_styles[j])
+          if all_improves[j][-1] > max_value:
+              max_value = all_improves[j][-1]
     ax.xaxis.set_major_formatter(mtick.PercentFormatter(xmax=1))
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(xmax=1))
-    ax.legend()
-    if sorted(all_improve1)[-1] > 4 or sorted(all_improve2)[-1] > 4:
-      ax.set_xlim(right=4)
+    ax.legend(loc="lower right")
+    if max_value > 4:
+        ax.set_xlim(right=4)
     if is_ran:
         ax.set_xlabel("RAN-Improve")
     else:
@@ -338,53 +327,51 @@ def plot_maxmin_ratio(sys1: int, sys2: int, sys3: int, ofname: str):
     ax.set_ylabel("Max-Min Ratio")
     fig.savefig(ofname)
 
+is_pf_schedule = True
+if is_pf_schedule:
+    SDIR="./sample_data/"
+else:
+    SDIR="./sample_data_df/"
 
-SDIR = "./sample_data/"
-# plot_perue_bw(SDIR+"naiveho5.csv", "datarate_naiveho5.png")
-# plot_perue_ran(SDIR+"naiveho5.csv", "ran_naiveho5.png")
-# plot_perue_bw(SDIR+"smartho5.csv", "datarate_smartho5.png")
-# plot_perue_ran(SDIR+"smartho5.csv", "ran_smartho5.png")
-
-# for i in range(10):
-#     plot_scheme_compare(SDIR+"origin_c5_" + str(i) + ".csv",
-#                        SDIR+"naiveho_c5_" + str(i) + ".csv",
-#                        SDIR+"smartho_c5_" + str(i) + ".csv",
-#                        SDIR+"compare_c5_ran" + str(i) + ".png", True)
-#     plot_scheme_compare(SDIR+"origin_c5_" + str(i) + ".csv",
-#                        SDIR+"naiveho_c5_" + str(i) + ".csv",
-#                        SDIR+"smartho_c5_" + str(i) + ".csv",
-#                        SDIR+"compare_c5_datarate" + str(i) + ".png", False)
-
+n_samples = 20
 LABELS=["Origin", "NaiveHO", "UnawareHO", "AwareHO"]
-PREFIXES=["origin_", "naiveho_", "unawareho_", "awareho_"]
-
-plot_absvalue_multi_samples(0, 1, 2, "tp_first20p.png", False, 0, 0.2)
-
-plot_absvalue_multi_samples(0, 1, 2, "ran_first20p.png", True, 0, 0.2)
-
-plot_improve_multi_samples(0, 1, 2, "ran_improve_first20p.png", True, 0, 0.2)
-
-plot_improve_multi_samples(0, 1, 2, "tp_improve_first20p.png", False, 0, 0.2)
-
+case_name="basic_"
+PREFIXES = ["origin_", "naiveho_", "unawareho_","awareho_"]
+PREFIXES = [prefix + case_name for prefix in PREFIXES]
 
 # for i in range(10):
-#     plot_scheme_compare(SDIR+"origin_screw_" + str(i) + ".csv",
-#                        SDIR+"naiveho_screw_" + str(i) + ".csv",
-#                        SDIR+"smartho_screw_" + str(i) + ".csv",
-#                        SDIR+"compare_screw_ran" + str(i) + ".png", True)
-#     plot_scheme_compare(SDIR+"origin_screw_" + str(i) + ".csv",
-#                        SDIR+"naiveho_screw_" + str(i) + ".csv",
-#                        SDIR+"smartho_screw_" + str(i) + ".csv",
-#                        SDIR+"compare_screw_datarate" + str(i) + ".png", False)
-# plot_absvalue_multi_samples(
-#     "origin_screw_", "naiveho_screw_", "unawareho_screw_", "tp_screw_first20p.png", False, 0, 0.2
-# )
-# plot_absvalue_multi_samples(
-#     "origin_screw_", "naiveho_screw_", "unawareho_screw_", "ran_screw_first20p.png", True, 0, 0.2
-# )
-# plot_improve_multi_samples(
-#     "origin_screw_", "naiveho_screw_", "unawareho_screw_", "ran_improve_screw_first20p.png", True, 0, 0.2
-# )
-# plot_improve_multi_samples(
-#     "origin_screw_", "naiveho_screw_", "unawareho_screw_", "tp_improve_screw_first20p.png", False, 0, 0.2
-# )
+#     plot_scheme_compare(
+#         [
+#           SDIR+PREFIXES[1] + str(i) + ".csv",
+#           SDIR+PREFIXES[2] + str(i) + ".csv"],
+#         "./figures/" + case_name + "compare_ran" + str(i) + ".png",
+#         True)
+#     plot_scheme_compare(
+#         [
+#          SDIR+PREFIXES[1] + str(i) + ".csv",
+#          SDIR+PREFIXES[2] + str(i) + ".csv"],
+#         "./figures/" + case_name + "compare_datarate" + str(i) + ".png",
+#         False)
+
+plot_absvalue_multi_samples(
+    PREFIXES, LABELS, "./figures/" + case_name + "tp_first20p.png", False, 0, 0.2)
+
+plot_absvalue_multi_samples(
+    PREFIXES, LABELS, "./figures/" + case_name + "ran_first20p.png", True, 0, 0.2)
+
+plot_improve_multi_samples(
+    0, PREFIXES, LABELS, "./figures/" + case_name + "ran_improve_first20p.png", True, 0, 0.2)
+
+plot_improve_multi_samples(
+    0, PREFIXES, LABELS, "./figures/" + case_name + "tp_improve_first20p.png", False, 0, 0.2)
+
+# LABELS=["Origin", "NaiveHO", "UnawareHO", "AwareHO"]
+# PREFIXES=["origin_macro_", "naiveho_macro_", "unawareho_macro_", "awareho_macro_"]
+
+# plot_absvalue_multi_samples(PREFIXES, LABELS, "tp_macro_first20p.png", False, 0, 0.2)
+
+# plot_absvalue_multi_samples(PREFIXES, LABELS, "ran_macro_first20p.png", True, 0, 0.2)
+
+# plot_improve_multi_samples(0, PREFIXES, LABELS, "ran_improve_macro_first20p.png", True, 0, 0.2)
+
+# plot_improve_multi_samples(0, PREFIXES, LABELS, "tp_improve_macro_first20p.png", False, 0, 0.2)
