@@ -52,9 +52,11 @@ class Simulator:
                 cell_ues.append({})
             self.ue_info.append(cell_ues)
         self.handover_record = defaultdict(list)
+        # we use 100Mbps as the target rate for datarate-fairness
+        self.const_rate = 100
 
     def total_ran(self) -> int:
-        return MACRO_WEIGHT + (self.n_cells - 1) * SMALL_WEIGHT
+        return MACRO_CAPACITY + (self.n_cells - 1) * SMALL_CAPACITY
 
     def insert_ue(self, cid, sid, ue_info):
         self.ue_info[cid][sid][ue_info.ue_id] = ue_info
@@ -74,13 +76,37 @@ class Simulator:
             n += len(self.ue_info[cid][sid])
         return n
 
+    def cell_slice_df_demand(self, cid, sid):
+        total_demand = 0
+        for ue_id, ue_info in self.ue_info[cid][sid].items():
+            total_demand += self.const_rate / ue_info.get_cqi(cid)
+        return total_demand
+
+    def slice_df_demand(self, sid):
+        total_demand = 0
+        for cid in range(self.n_cells):
+            for ue_id, ue_info in self.ue_info[cid][sid].items():
+                total_demand += self.const_rate / ue_info.get_cqi(cid)
+        return total_demand
+
     def cell_slice_num(self, cid, sid):
         return len(self.ue_info[cid][sid])
 
-    def cell_relative_demand(self, cid):
+    def cell_relative_demand(self, cid, is_pf: bool = True):
+        """
+        The unit of "relative demand" is the RAN percentage.
+        The more close of the relative demand to the cell capacity, the more balanced the system is.
+        """
         cell_demand = 0
-        for sid in range(self.n_slices):
-            cell_demand += (self.cell_slice_num(cid, sid) / self.slice_num(sid))
+        if is_pf:
+            # PF fairness scheduling
+            for sid in range(self.n_slices):
+                cell_demand += (self.cell_slice_num(cid, sid) / self.slice_num(sid))
+        else:
+            # Datarate fairness scheduling
+            for sid in range(self.n_slices):
+                cell_demand += self.cell_slice_df_demand(cid, sid) / \
+                    self.slice_df_demand(sid)
         cell_demand = cell_demand * self.total_ran() / self.n_slices
         return cell_demand
 
@@ -100,11 +126,16 @@ class Simulator:
                 ues_num[i, j] = self.cell_slice_num(i, j)
         print(headlog + f"ues_num:\n{ues_num}")
 
-    def log_relative_demand(self) -> None:
+    def log_relative_demand(self, is_pf: bool = True) -> None:
         ues_demand = np.zeros((self.n_cells, self.n_slices), dtype=float)
         for i in range(self.n_cells):
             for j in range(self.n_slices):
-                ues_demand[i, j] = self.cell_slice_num(i, j) / self.slice_num(j)
+                if is_pf:
+                    ues_demand[i, j] = self.total_ran() / self.n_slices * \
+                        self.cell_slice_num(i, j) / self.slice_num(j)
+                else:
+                    ues_demand[i, j] = self.total_ran() / self.n_slices * \
+                        self.cell_slice_df_demand(i, j) / self.slice_df_demand(j)
         print(f"relative_demand:\n{ues_demand}")
         print(f"cell_demand:\n{np.sum(ues_demand, axis=1)}")
 
@@ -132,7 +163,7 @@ class Simulator:
         avg_small_num = 0
         for cid in range(self.n_cells):
             avg_small_num += self.cell_num(cid)
-        avg_small_num = int(SMALL_WEIGHT * avg_small_num / ((self.n_cells - 1) * SMALL_WEIGHT + MACRO_WEIGHT))
+        avg_small_num = int(SMALL_CAPACITY * avg_small_num / ((self.n_cells - 1) * SMALL_CAPACITY + MACRO_CAPACITY))
         for cid in range(1, self.n_cells):
             num_cell = self.cell_num(cid)
             if num_cell > avg_small_num:
@@ -144,14 +175,15 @@ class Simulator:
         sim.calculate_ran_weights()
 
     def handover_by_demand(self, cfrom: int, cto: int, demand_offload: float, ran_aware = False):
-        # print(f"from {cfrom} to {cto} demand_offload {demand_offload}")
+        """
+        """
         ues_cfrom = self.get_cell_allues(cfrom)
         ues_sorted = sorted(ues_cfrom, key=lambda x: -(x.get_cqi(cto) / x.get_cqi(cfrom)))
         while demand_offload > 0:
             ue_top = ues_sorted[0]
             del(ues_sorted[0])
             ue_demand = self.ue_relative_demand(ue_top.sid)
-            # print(f"ue_id: {ue_top.ue_id}, ue_demand: {ue_demand}")
+            # print(f"ue_id: {ue_top.ue_id}, slice: {ue_top.sid}, ue_demand: {ue_demand}, dmd_offload: {demand_offload}")
             # if the neighbor cell's signal is too bad, stop
             if ran_aware and ue_top.get_cqi(cto) / ue_top.get_cqi(cfrom) < 0.5:
                 break
@@ -159,38 +191,41 @@ class Simulator:
             if abs(demand_offload) < abs(demand_offload - ue_demand):
                 break
             demand_offload -= ue_demand
-            # print(f"move ue {ue_top.ue_id} slice {ue_top.sid} ue_demand {ue_demand} left_demand {demand_offload}")
             self.ue_info[cfrom][ue_top.sid].pop(ue_top.ue_id)
             self.ue_info[cto][ue_top.sid][ue_top.ue_id] = ue_top
             self.handover_record[(cfrom, cto)].append(ue_top.ue_id)
 
-    def unaware_handover(self):
+    def unaware_handover(self, is_pf: bool = True):
         for cid in range(1, self.n_cells):
-            demand_cell = self.cell_relative_demand(cid)
-            if demand_cell > SMALL_WEIGHT:
-                self.handover_by_demand(cid, 0, demand_cell - SMALL_WEIGHT)
+            demand_cell = self.cell_relative_demand(cid, is_pf)
+            if demand_cell > SMALL_CAPACITY:
+                self.handover_by_demand(cid, 0, demand_cell - SMALL_CAPACITY)
         for cid in range(1, self.n_cells):
-            demand_cell = self.cell_relative_demand(cid)
-            if demand_cell < SMALL_WEIGHT:
-                self.handover_by_demand(0, cid, SMALL_WEIGHT - demand_cell)
+            demand_cell = self.cell_relative_demand(cid, is_pf)
+            if demand_cell < SMALL_CAPACITY:
+                self.handover_by_demand(0, cid, SMALL_CAPACITY - demand_cell)
         # the swap-based ran weight calculation can be suboptimal, and it's np-hard
         # for smart-handover, we directly use relative-demand as the ran weights
         ran_weights = np.zeros((self.n_cells, self.n_slices), dtype=float)
-        for i in range(self.n_cells):
-            for j in range(self.n_slices):
-                ran_weights[i, j] = self.cell_slice_num(i, j) / self.slice_num(j) \
-                                    * self.total_ran() / self.n_slices
+        for cid in range(self.n_cells):
+            for sid in range(self.n_slices):
+                if is_pf:
+                    ran_weights[cid, sid] = self.cell_slice_num(cid, sid) \
+                        / self.slice_num(sid) * self.total_ran() / self.n_slices
+                else:
+                    ran_weights[cid, sid] = self.cell_slice_df_demand(cid, sid) \
+                        / self.slice_df_demand(sid) * self.total_ran() / self.n_slices
         self.ran_weights = ran_weights
 
     def aware_handover(self):
         for cid in range(1, self.n_cells):
             demand_cell = self.cell_relative_demand(cid)
-            if demand_cell > SMALL_WEIGHT:
-                self.handover_by_demand(cid, 0, demand_cell - SMALL_WEIGHT, True)
+            if demand_cell > SMALL_CAPACITY:
+                self.handover_by_demand(cid, 0, demand_cell - SMALL_CAPACITY, True)
         for cid in range(1, self.n_cells):
             demand_cell = self.cell_relative_demand(cid)
-            if demand_cell < SMALL_WEIGHT:
-                self.handover_by_demand(0, cid, SMALL_WEIGHT - demand_cell, True)
+            if demand_cell < SMALL_CAPACITY:
+                self.handover_by_demand(0, cid, SMALL_CAPACITY - demand_cell, True)
         sim.calculate_ran_weights()
 
     def calculate_ran_weights(self):
@@ -205,9 +240,9 @@ class Simulator:
             for cid in range(self.n_cells):
                 ideal_weights[cid, sid] = self.cell_slice_num(cid, sid) / self.slice_num(sid) * slice_ran
                 if cid == 0:
-                    ran_weights[cid, sid] = MACRO_WEIGHT / self.n_slices
+                    ran_weights[cid, sid] = MACRO_CAPACITY / self.n_slices
                 else:
-                    ran_weights[cid, sid] = SMALL_WEIGHT / self.n_slices
+                    ran_weights[cid, sid] = SMALL_CAPACITY / self.n_slices
                 provision[cid, sid] = provision_metric(ran_weights[cid, sid], ideal_weights[cid, sid])
         delta = 0.001
         while True:
@@ -296,9 +331,9 @@ def gen_slice_ue(rand_seed):
     for i in range(N_CELLS):
         for j in range(N_SLICES):
             if i == 0:
-                ues_num[i, j] = random.randint(0, MAX_RAND_UE) * MACRO_WEIGHT
+                ues_num[i, j] = random.randint(0, MAX_RAND_UE) * MACRO_CAPACITY
             else:
-                ues_num[i, j] = random.randint(0, MAX_RAND_UE) * SMALL_WEIGHT
+                ues_num[i, j] = random.randint(0, MAX_RAND_UE) * SMALL_CAPACITY
     return ues_num
 
 # def gen_screw_slice_ue(rand_seed):
@@ -322,9 +357,9 @@ def gen_screw_slice_ue(rand_seed):
     for i in range(N_CELLS):
         for j in range(N_SLICES):
             if i == 0:
-                ues_num[i, j] = random.randint(0, slice_max_ues[j]) * MACRO_WEIGHT
+                ues_num[i, j] = random.randint(0, slice_max_ues[j]) * MACRO_CAPACITY
             else:
-                ues_num[i, j] = random.randint(0, slice_max_ues[j]) * SMALL_WEIGHT
+                ues_num[i, j] = random.randint(0, slice_max_ues[j]) * SMALL_CAPACITY
     return ues_num
 
 def init_simulator(ues_num, rand_seed):
@@ -383,9 +418,9 @@ def init_simulator(ues_num, rand_seed):
 N_SLICES = 5
 N_CELLS = 5
 MAX_RAND_UE = 10
-MACRO_WEIGHT = 1
-SMALL_WEIGHT = 1
-casename = "macro_"
+MACRO_CAPACITY = 2
+SMALL_CAPACITY = 1
+CASENAME = "macro_"
 is_pf_schedule = True
 n_samples = 20
 
@@ -402,26 +437,26 @@ if is_pf_schedule:
             continue
         sim.calculate_ran_weights()
         sim.log_ue_distribution()
-        sim.dump_to_csv_pf(ODIR + "origin_" + casename + str(i) + ".csv")
+        sim.dump_to_csv_pf(ODIR + "origin_" + CASENAME + str(i) + ".csv")
 
         sim.naive_handover()
         sim.log_ran_weights("NaiveHO, ")
-        sim.log_ue_distribution("NaiveHO, ")
-        sim.dump_to_csv_pf(ODIR + "naiveho_" + casename + str(i) + ".csv")
+        sim.log_relative_demand()
+        sim.dump_to_csv_pf(ODIR + "naiveho_" + CASENAME + str(i) + ".csv")
         sim.log_handover_record("NaiveHO, ")
 
         sim = init_simulator(ues_num, i)
         sim.unaware_handover()
         sim.log_ran_weights("UnawareHO, ")
-        sim.log_ue_distribution("UnawareHO, ")
-        sim.dump_to_csv_pf(ODIR + "unawareho_" + casename + str(i) + ".csv")
+        sim.log_relative_demand()
+        sim.dump_to_csv_pf(ODIR + "unawareho_" + CASENAME + str(i) + ".csv")
         sim.log_handover_record("UnawareHO, ")
 
         sim = init_simulator(ues_num, i)
         sim.aware_handover()
         sim.log_ran_weights("AwareHO, ")
-        sim.log_ue_distribution("AwareHO, ")
-        sim.dump_to_csv_pf(ODIR + "awareho_" + casename + str(i) + ".csv")
+        sim.log_relative_demand()
+        sim.dump_to_csv_pf(ODIR + "awareho_" + CASENAME + str(i) + ".csv")
         sim.log_handover_record("AwareHO, ")
 
 if not is_pf_schedule:
@@ -436,11 +471,16 @@ if not is_pf_schedule:
             print(f"rand_seed {i} doesn't work")
             continue
         sim.calculate_ran_weights()
-        sim.log_ue_distribution()
-        sim.dump_to_csv_df(ODIR + "origin_macro_" + str(i) + ".csv")
+        sim.log_relative_demand(False)
+        sim.dump_to_csv_df(ODIR + "origin_" + CASENAME + str(i) + ".csv")
 
         sim.naive_handover()
-        sim.log_ran_weights()
-        sim.log_ue_distribution()
-        sim.dump_to_csv_df(ODIR + "naiveho_macro_" + str(i) + ".csv")
-        sim.log_handover_record()
+        sim.log_relative_demand(False)
+        sim.dump_to_csv_df(ODIR + "naiveho_" + CASENAME + str(i) + ".csv")
+        sim.log_handover_record("NaiveHO, ")
+
+        sim = init_simulator(ues_num, i)
+        sim.unaware_handover(is_pf=False)
+        sim.log_relative_demand(False)
+        sim.dump_to_csv_df(ODIR + "unawareho_" + CASENAME + str(i) + ".csv")
+        sim.log_handover_record("UnawareHO, ")
