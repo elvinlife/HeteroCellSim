@@ -56,8 +56,8 @@ def plot_scheme_compare(fnames: list, ofname: str, is_ran: True):
         return
     for fname in fnames:
         dfs.append(pd.read_csv(fname))
-    schemes = ["NaiveHO", "UnawareHO"]
-    # schemes = ["Origin", "NaiveHO", "UnawareHO"]
+    # schemes = ["NaiveHO", "UnawareHO"]
+    schemes = ["Origin", "NaiveHO", "UnawareHO"]
     n_slices = dfs[0]["slice"].max() + 1
     fig, ax = plt.subplots(figsize=(20, 5))
     bar_width = 0.3
@@ -72,7 +72,7 @@ def plot_scheme_compare(fnames: list, ofname: str, is_ran: True):
                 else:
                     slice_ue_metric.append(float(row["ran"]) * float(row["channel"]))
             data_sort = sorted(slice_ue_metric)
-            x_array = np.arange(ue_begin, ue_begin + len(data_sort)) + bar_width * (i - 0.5)
+            x_array = np.arange(ue_begin, ue_begin + len(data_sort)) + bar_width * (i-1)
             ax.bar(x_array, data_sort,
                    width=bar_width,
                    label=schemes[i] + "-S" + str(sid))
@@ -113,6 +113,10 @@ def get_ran_improve(f1: str, f2: str, lowb: float, upperb: float):
 
 
 def get_ran_maxmin(fname: str) -> list:
+    """
+    For every slice, get the ratio between the RAN of the UE with maximum RAN
+    and the UE with minimal RAN
+    """
     df = pd.read_csv(fname)
     n_slices = df["slice"].max() + 1
     scheme1_array = []
@@ -176,71 +180,60 @@ def get_sameue_improve(f1: str, f2: str, lowb: float, upperb: float, is_ran: Tru
         improve_array = improve_array + slice_improve
     return sorted(improve_array)
 
-
-def get_pfmetric(f1, f2):
+def get_relademand(ifname: str, is_pf: bool = True):
     """
-    it returns the per-slice pf-metric of f1 and f2
+    For one trace, get the relative demand of every cell to see how balanced
+    the allocation strategy is
     """
-    dfs = []
-    dfs.append(pd.read_csv(f1))
-    dfs.append(pd.read_csv(f2))
-    n_slices = dfs[0]["slice"].max() + 1
-    pf_metrics_scheme = []
-    for i, df in enumerate(dfs):
-        pf_metrics = []
-        for sid in range(n_slices):
-            slice_ues = df[df["slice"] == sid]
-            cqi = 72
-            # cqi = 50
-            pf_metric = 0
+    df = pd.read_csv(ifname)
+    n_slices = df["slice"].max() + 1
+    n_cells = df["cell"].max() + 1
+    slices_demand = [0 for i in range(n_slices)]
+    cells_demand = [0 for i in range(n_cells)]
+    slice_ran = TOTAL_RAN / n_slices
+    for sid in range(n_slices):
+        slice_ues = df[df["slice"] == sid]
+        if is_pf:
+            slices_demand[sid] = len(slice_ues)
+        else:
             for _, row in slice_ues.iterrows():
-                datarate = float(row["ran"]) * cqi
-                pf_metric += np.log(datarate)
-            pf_metrics.append(pf_metric)
-        pf_metrics_scheme.append(pf_metrics)
-    return pf_metrics_scheme
+                slices_demand[sid] += 1 / row["channel"]
+    for cid in range(n_cells):
+        for sid in range(n_slices):
+            specific_ues = df[df["slice"] == sid]
+            specific_ues = specific_ues[specific_ues["cell"] == cid]
+            if is_pf:
+                cells_demand[cid] += len(specific_ues) / slices_demand[sid] * slice_ran
+            else:
+                for _, row in specific_ues.iterrows():
+                    cells_demand[cid] += (1 / row["channel"]) / slices_demand[sid] * slice_ran
+    return cells_demand
 
 
-def plot_pfmetric_gain(ofname):
-    n_samples = 30
-    SDIR = "./sample_result/"
-    gain_array = []
-    naive_pf_array = []
-    smart_pf_array = []
-    for i in range(n_samples):
-        metrics = get_pfmetric(
-            SDIR + "naiveho_c4_" + str(i) + ".csv",
-            SDIR + "smartho_c4_" + str(i) + ".csv",
-        )
-        for j in range(len(metrics[0])):
-            if metrics[0][j] < 0:
-                continue
-            gain_array.append((metrics[1][j] / metrics[0][j] - 1) * 100)
-            naive_pf_array.append(metrics[0][j])
-            smart_pf_array.append(metrics[1][j])
-    sort_gain = sorted(gain_array)
-    cdf = np.linspace(0, 1, len(sort_gain))
-    fig, axs = plt.subplots(1, 2, figsize=(12, 5))
-    axs[0].plot(sort_gain, cdf)
-    axs[0].set_xlabel("PFMetric_gain(%)")
-    axs[0].set_ylabel("Percentage")
-    axs[0].set_title("PF-Metric gain of SmartHO compared with NaiveHO")
-    axs[1].plot(sorted(naive_pf_array), cdf, label="NaiveHO")
-    axs[1].plot(sorted(smart_pf_array), cdf, label="SmartHO")
-    axs[1].set_xlabel("PFMetric")
-    axs[1].set_ylabel("Percentage")
-    axs[1].set_title("Absolute PF metrics")
-    axs[1].legend()
+def plot_relademand_cdf(
+    prefixes: list, labels: list, ofname: str, is_pf: bool = True
+):
+    line_styles = ["solid", "dotted", "dashed", "dashdot"]
+    fig, ax = plt.subplots(figsize=(8, 6))
+    scheme_metrics = [[] for i in range(len(prefixes))]
+    for i in range(N_SAMPLES):
+        if not os.path.exists(SDIR + prefixes[0] + str(i) + ".csv"):
+            continue
+        for j, prefix in enumerate(prefixes):
+            cells_demand = get_relademand(SDIR + prefix + str(i) + ".csv", is_pf)
+            scheme_metrics[j] = scheme_metrics[j] + cells_demand
+    for j, label in enumerate(labels):
+        ax.ecdf(scheme_metrics[j], label=label, linestyle=line_styles[j])
+    ax.legend()
     fig.savefig(ofname)
 
-
-def plot_absvalue_multi_samples(
+def plot_absvalue_multi_sys(
     prefixes: list, labels: list, ofname: str, is_ran: bool, lowb: float, upperb: float
 ):
     line_styles = ["solid", "dotted", "dashed", "dashdot"]
     fig, ax = plt.subplots(figsize=(8, 6))
     scheme_metrics = [[] for i in range(len(prefixes))]
-    for i in range(n_samples):
+    for i in range(N_SAMPLES):
         if not os.path.exists(SDIR + prefixes[0] + str(i) + ".csv"):
             continue
         for j, prefix in enumerate(prefixes):
@@ -259,7 +252,7 @@ def plot_absvalue_multi_samples(
     fig.savefig(ofname)
 
 
-def plot_improve_multi_samples(
+def plot_improve_multi_sys(
     basic_id: int, prefixes: list, labels: list, ofname: str, is_ran: bool, lowb: float, upperb: float
 ):
     """
@@ -268,7 +261,7 @@ def plot_improve_multi_samples(
     line_styles = [ "dashdot", "solid", "dotted", "dashed"]
     fig, ax = plt.subplots(figsize=(8, 6))
     all_improves = [[] for i in range(len(prefixes))]
-    for i in range(n_samples):
+    for i in range(N_SAMPLES):
         if not os.path.exists(SDIR + prefixes[basic_id] + str(i) + ".csv"):
             continue
         for j, prefix in enumerate(prefixes):
@@ -330,40 +323,49 @@ def plot_maxmin_ratio(sys1: int, sys2: int, sys3: int, ofname: str):
 is_pf_schedule = True
 if is_pf_schedule:
     SDIR="./sample_data/"
+    FIGDIR="./figures/"
 else:
     SDIR="./sample_data_df/"
+    FIGDIR="./figures-df/"
 
-n_samples = 20
-LABELS=["Origin", "NaiveHO", "UnawareHO", "AwareHO"]
-case_name="basic_"
-PREFIXES = ["origin_", "naiveho_", "unawareho_","awareho_"]
-PREFIXES = [prefix + case_name for prefix in PREFIXES]
+N_SAMPLES = 20
+CASE_NAME="macro_"
+# LABELS=["Origin", "NaiveHO", "UnawareHO", "AwareHO"]
+# PREFIXES = ["origin_", "naiveho_", "unawareho_", "awareho_"]
+TOTAL_RAN = 6
+LABELS=["Origin", "NaiveHO", "UnawareHO"]
+PREFIXES = ["origin_", "naiveho_", "unawareho_"]
+PREFIXES = [prefix + CASE_NAME for prefix in PREFIXES]
 
-# for i in range(10):
+# for i in range(n_samples):
 #     plot_scheme_compare(
 #         [
+#           SDIR+PREFIXES[0] + str(i) + ".csv",
 #           SDIR+PREFIXES[1] + str(i) + ".csv",
 #           SDIR+PREFIXES[2] + str(i) + ".csv"],
-#         "./figures/" + case_name + "compare_ran" + str(i) + ".png",
+#         FIGDIR + case_name + "compare_ran" + str(i) + ".png",
 #         True)
 #     plot_scheme_compare(
 #         [
+#          SDIR+PREFIXES[0] + str(i) + ".csv",
 #          SDIR+PREFIXES[1] + str(i) + ".csv",
 #          SDIR+PREFIXES[2] + str(i) + ".csv"],
-#         "./figures/" + case_name + "compare_datarate" + str(i) + ".png",
+#         FIGDIR + case_name + "compare_datarate" + str(i) + ".png",
 #         False)
 
-plot_absvalue_multi_samples(
-    PREFIXES, LABELS, "./figures/" + case_name + "tp_first20p.png", False, 0, 0.2)
+plot_relademand_cdf(PREFIXES, LABELS, FIGDIR + CASE_NAME + "relademand.png", is_pf_schedule)
 
-plot_absvalue_multi_samples(
-    PREFIXES, LABELS, "./figures/" + case_name + "ran_first20p.png", True, 0, 0.2)
+plot_absvalue_multi_sys(
+    PREFIXES, LABELS, FIGDIR + CASE_NAME + "tp_first20p.png", False, 0, 0.2)
 
-plot_improve_multi_samples(
-    0, PREFIXES, LABELS, "./figures/" + case_name + "ran_improve_first20p.png", True, 0, 0.2)
+plot_absvalue_multi_sys(
+    PREFIXES, LABELS, FIGDIR + CASE_NAME + "ran_first20p.png", True, 0, 0.2)
 
-plot_improve_multi_samples(
-    0, PREFIXES, LABELS, "./figures/" + case_name + "tp_improve_first20p.png", False, 0, 0.2)
+plot_improve_multi_sys(
+    0, PREFIXES, LABELS, FIGDIR + CASE_NAME + "ran_improve_first20p.png", True, 0, 0.2)
+
+plot_improve_multi_sys(
+    0, PREFIXES, LABELS, FIGDIR + CASE_NAME + "tp_improve_first20p.png", False, 0, 0.2)
 
 # LABELS=["Origin", "NaiveHO", "UnawareHO", "AwareHO"]
 # PREFIXES=["origin_macro_", "naiveho_macro_", "unawareho_macro_", "awareho_macro_"]
