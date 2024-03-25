@@ -112,6 +112,10 @@ class Simulator:
 
     def ue_relative_demand(self, sid: int) -> float:
         return 1.0 / self.slice_num(sid) * self.total_ran() / self.n_slices
+    
+    def ue_df_relative_demand(self, ue: UEInfo, bind_cell: int) -> float:
+        return self.total_ran() / self.n_slices \
+            * (self.const_rate / ue.get_cqi(bind_cell)) / self.slice_df_demand(ue.sid)
 
     def get_cell_allues(self, cid: int) -> list[UEInfo]:
         all_ues = []
@@ -195,15 +199,38 @@ class Simulator:
             self.ue_info[cto][ue_top.sid][ue_top.ue_id] = ue_top
             self.handover_record[(cfrom, cto)].append(ue_top.ue_id)
 
+    def handover_by_df_demand(self, cfrom: int, cto: int, demand_offload: float):
+        """
+        """
+        ues_cfrom = self.get_cell_allues(cfrom)
+        ues_sorted = sorted(ues_cfrom, key=lambda x: -(x.get_cqi(cto) / x.get_cqi(cfrom)))
+        while demand_offload > 0:
+            ue_top = ues_sorted[0]
+            del(ues_sorted[0])
+            ue_demand = self.ue_df_relative_demand(ue_top, cfrom)
+            if abs(demand_offload) < abs(demand_offload - ue_demand):
+                break
+            demand_offload -= ue_demand
+            self.ue_info[cfrom][ue_top.sid].pop(ue_top.ue_id)
+            self.ue_info[cto][ue_top.sid][ue_top.ue_id] = ue_top
+            self.handover_record[(cfrom, cto)].append(ue_top.ue_id)
+
     def unaware_handover(self, is_pf: bool = True):
         for cid in range(1, self.n_cells):
-            demand_cell = self.cell_relative_demand(cid, is_pf)
-            if demand_cell > SMALL_CAPACITY:
-                self.handover_by_demand(cid, 0, demand_cell - SMALL_CAPACITY)
+            cell_demand = self.cell_relative_demand(cid, is_pf)
+            if cell_demand > SMALL_CAPACITY:
+                if is_pf:
+                    self.handover_by_demand(cid, 0, cell_demand - SMALL_CAPACITY)
+                else:
+                    self.handover_by_df_demand(cid, 0, cell_demand - SMALL_CAPACITY)
         for cid in range(1, self.n_cells):
-            demand_cell = self.cell_relative_demand(cid, is_pf)
-            if demand_cell < SMALL_CAPACITY:
-                self.handover_by_demand(0, cid, SMALL_CAPACITY - demand_cell)
+            cell_demand = self.cell_relative_demand(cid, is_pf)
+            if cell_demand < SMALL_CAPACITY:
+                if is_pf:
+                    self.handover_by_demand(0, cid, SMALL_CAPACITY - cell_demand)
+                else:
+                    self.handover_by_df_demand(0, cid, SMALL_CAPACITY - cell_demand)
+
         # the swap-based ran weight calculation can be suboptimal, and it's np-hard
         # for smart-handover, we directly use relative-demand as the ran weights
         ran_weights = np.zeros((self.n_cells, self.n_slices), dtype=float)
@@ -231,6 +258,7 @@ class Simulator:
     def calculate_ran_weights(self):
         """
         The current greed approach is suboptimal
+        It has a bug for datarate-fairness
         """
         ideal_weights = np.zeros((self.n_cells, self.n_slices), dtype=float)
         ran_weights = np.zeros((self.n_cells, self.n_slices), dtype=float)
@@ -246,7 +274,7 @@ class Simulator:
                 provision[cid, sid] = provision_metric(ran_weights[cid, sid], ideal_weights[cid, sid])
         delta = 0.001
         while True:
-            # print(f"provision: \n {provision}")
+            print(f"provision: \n {provision} ran_weights: \n {ran_weights}")
             swap_once = False
             for lcell in range(self.n_cells):
                 for lslice in range(self.n_slices):
@@ -418,9 +446,9 @@ def init_simulator(ues_num, rand_seed):
 N_SLICES = 5
 N_CELLS = 5
 MAX_RAND_UE = 10
-MACRO_CAPACITY = 2
-SMALL_CAPACITY = 1
-CASENAME = "macro_"
+MACRO_CAPACITY = 1
+SMALL_CAPACITY = 2
+CASENAME = "small_"
 is_pf_schedule = True
 n_samples = 20
 
@@ -428,36 +456,38 @@ if is_pf_schedule:
     ODIR = "./sample_data/"
     for i in range(n_samples):
         print(f"\nrandom seed: {i}")
-        # ues_num = gen_screw_slice_ue(i)
-        ues_num = gen_slice_ue(i)
-        try:
-            sim = init_simulator(ues_num, i)
-        except ValueError as ve:
-            print(f"rand_seed {i} doesn't work")
-            continue
-        sim.calculate_ran_weights()
-        sim.log_ue_distribution()
-        sim.dump_to_csv_pf(ODIR + "origin_" + CASENAME + str(i) + ".csv")
+        ues_num = gen_screw_slice_ue(i)
+        # # ues_num = gen_slice_ue(i)
+        # try:
+        #     sim = init_simulator(ues_num, i)
+        # except ValueError as ve:
+        #     print(f"rand_seed {i} doesn't work")
+        #     continue
+        # sim.calculate_ran_weights()
+        # sim.log_ran_weights("Origin, ")
+        # # sim.log_relative_demand()
+        # sim.dump_to_csv_pf(ODIR + "origin_" + CASENAME + str(i) + ".csv")
 
-        sim.naive_handover()
-        sim.log_ran_weights("NaiveHO, ")
-        sim.log_relative_demand()
-        sim.dump_to_csv_pf(ODIR + "naiveho_" + CASENAME + str(i) + ".csv")
-        sim.log_handover_record("NaiveHO, ")
+        # sim.naive_handover()
+        # sim.log_ran_weights("NaiveHO, ")
+        # # sim.log_relative_demand()
+        # sim.dump_to_csv_pf(ODIR + "naiveho_" + CASENAME + str(i) + ".csv")
+        # # sim.log_handover_record("NaiveHO, ")
 
-        sim = init_simulator(ues_num, i)
-        sim.unaware_handover()
-        sim.log_ran_weights("UnawareHO, ")
-        sim.log_relative_demand()
-        sim.dump_to_csv_pf(ODIR + "unawareho_" + CASENAME + str(i) + ".csv")
-        sim.log_handover_record("UnawareHO, ")
+        # sim = init_simulator(ues_num, i)
+        # sim.unaware_handover()
+        # sim.log_ran_weights("UnawareHO, ")
+        # # sim.log_relative_demand()
+        # sim.dump_to_csv_pf(ODIR + "unawareho_" + CASENAME + str(i) + ".csv")
+        # # sim.log_handover_record("UnawareHO, ")
 
         sim = init_simulator(ues_num, i)
         sim.aware_handover()
+        sim.log_ue_distribution("AwareHO")
         sim.log_ran_weights("AwareHO, ")
-        sim.log_relative_demand()
+        # sim.log_relative_demand()
         sim.dump_to_csv_pf(ODIR + "awareho_" + CASENAME + str(i) + ".csv")
-        sim.log_handover_record("AwareHO, ")
+        # sim.log_handover_record("AwareHO, ")
 
 if not is_pf_schedule:
     ODIR = "./sample_data_df/"
