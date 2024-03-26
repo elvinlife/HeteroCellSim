@@ -255,7 +255,7 @@ class Simulator:
                 self.handover_by_demand(0, cid, SMALL_CAPACITY - demand_cell, True)
         sim.calculate_ran_weights()
 
-    def calculate_ran_weights(self):
+    def calculate_ran_weights(self, is_pf: bool = True):
         """
         The current greed approach is suboptimal
         It has a bug for datarate-fairness
@@ -266,7 +266,12 @@ class Simulator:
         for sid in range(self.n_slices):
             slice_ran = self.total_ran() / self.n_slices
             for cid in range(self.n_cells):
-                ideal_weights[cid, sid] = self.cell_slice_num(cid, sid) / self.slice_num(sid) * slice_ran
+                if is_pf:
+                    ideal_weights[cid, sid] = slice_ran \
+                        * self.cell_slice_num(cid, sid) / self.slice_num(sid)
+                else:
+                    ideal_weights[cid, sid] = slice_ran \
+                        * self.cell_slice_df_demand(cid, sid) / self.slice_df_demand(sid)
                 if cid == 0:
                     ran_weights[cid, sid] = MACRO_CAPACITY / self.n_slices
                 else:
@@ -274,7 +279,7 @@ class Simulator:
                 provision[cid, sid] = provision_metric(ran_weights[cid, sid], ideal_weights[cid, sid])
         delta = 0.001
         while True:
-            print(f"provision: \n {provision} ran_weights: \n {ran_weights}")
+            # print(f"provision: \n {provision} ran_weights: \n {ran_weights}")
             swap_once = False
             for lcell in range(self.n_cells):
                 for lslice in range(self.n_slices):
@@ -286,10 +291,8 @@ class Simulator:
                                 continue
                             if provision[lcell][lslice] * provision[lcell][rslice] == -1:
                                 #  skip if both slices are over-provision or under-provision
-                                if provision[lcell][lslice] * provision[rcell][lslice] == 1 \
-                                and provision[lcell][rslice] * provision[rcell][rslice] == 1:
-                                    continue
-                                if provision[rcell][lslice] * provision[rcell][rslice] == 0:
+                                if not (provision[lcell][lslice] * provision[rcell][lslice] == -1 \
+                                    and provision[rcell][lslice] * provision[rcell][rslice] == -1):
                                     continue
                                 over = provision[lcell][lslice]
                                 ran_weights[lcell, lslice] -= over * delta
@@ -446,9 +449,9 @@ def init_simulator(ues_num, rand_seed):
 N_SLICES = 5
 N_CELLS = 5
 MAX_RAND_UE = 10
-MACRO_CAPACITY = 1
-SMALL_CAPACITY = 2
-CASENAME = "small_"
+MACRO_CAPACITY = 2
+SMALL_CAPACITY = 1
+CASENAME = "macro_"
 is_pf_schedule = True
 n_samples = 20
 
@@ -456,30 +459,30 @@ if is_pf_schedule:
     ODIR = "./sample_data/"
     for i in range(n_samples):
         print(f"\nrandom seed: {i}")
-        ues_num = gen_screw_slice_ue(i)
-        # # ues_num = gen_slice_ue(i)
-        # try:
-        #     sim = init_simulator(ues_num, i)
-        # except ValueError as ve:
-        #     print(f"rand_seed {i} doesn't work")
-        #     continue
-        # sim.calculate_ran_weights()
-        # sim.log_ran_weights("Origin, ")
-        # # sim.log_relative_demand()
-        # sim.dump_to_csv_pf(ODIR + "origin_" + CASENAME + str(i) + ".csv")
+        # ues_num = gen_screw_slice_ue(i)
+        ues_num = gen_slice_ue(i)
+        try:
+            sim = init_simulator(ues_num, i)
+        except ValueError as ve:
+            print(f"rand_seed {i} doesn't work")
+            continue
+        sim.calculate_ran_weights()
+        sim.log_ran_weights("Origin, ")
+        # sim.log_relative_demand()
+        sim.dump_to_csv_pf(ODIR + "origin_" + CASENAME + str(i) + ".csv")
 
-        # sim.naive_handover()
-        # sim.log_ran_weights("NaiveHO, ")
-        # # sim.log_relative_demand()
-        # sim.dump_to_csv_pf(ODIR + "naiveho_" + CASENAME + str(i) + ".csv")
-        # # sim.log_handover_record("NaiveHO, ")
+        sim.naive_handover()
+        sim.log_ran_weights("NaiveHO, ")
+        # sim.log_relative_demand()
+        sim.dump_to_csv_pf(ODIR + "naiveho_" + CASENAME + str(i) + ".csv")
+        # sim.log_handover_record("NaiveHO, ")
 
-        # sim = init_simulator(ues_num, i)
-        # sim.unaware_handover()
-        # sim.log_ran_weights("UnawareHO, ")
-        # # sim.log_relative_demand()
-        # sim.dump_to_csv_pf(ODIR + "unawareho_" + CASENAME + str(i) + ".csv")
-        # # sim.log_handover_record("UnawareHO, ")
+        sim = init_simulator(ues_num, i)
+        sim.unaware_handover()
+        sim.log_ran_weights("UnawareHO, ")
+        # sim.log_relative_demand()
+        sim.dump_to_csv_pf(ODIR + "unawareho_" + CASENAME + str(i) + ".csv")
+        # sim.log_handover_record("UnawareHO, ")
 
         sim = init_simulator(ues_num, i)
         sim.aware_handover()
