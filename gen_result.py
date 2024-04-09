@@ -19,7 +19,7 @@ def provision_metric(weight, ideal_weight):
 
 
 class UEInfo:
-    def __init__(self, ue_id, cqi_all, coord_x, coord_y):
+    def __init__(self, ue_id, cqi_all, coord_x, coord_y, kcell):
         """
         self.cqi_all: [[0, datarate_c0], [1, datarate_c1], [2, datarate_c2]]
         """
@@ -27,6 +27,7 @@ class UEInfo:
         self.cqi_all = cqi_all
         self.coord_x = coord_x
         self.coord_y = coord_y
+        self.kcell = kcell
 
     def __str__(self) -> str:
         ret_str = "("
@@ -443,6 +444,27 @@ class Simulator:
         # print(f"ran_weights: \n{self.ran_weights}")
         # print(f"provision: \n{provision}")
 
+    def dump_to_geo_conf(self, ofname: str) -> None:
+        head_line = ["ueid", "kcell", "slice"]
+        for i in range(5):
+            head_line.append("C" + str(i))
+            head_line.append("D" + str(i))
+        head_line = head_line + ["posx", "posy"]
+        lines_write = [",".join(head_line) + "\n"]
+        for cid in range(self.n_cells):
+            for sid in range(self.n_slices):
+                ue_subset = self.ue_info[cid][sid]
+                for k, info in ue_subset.items():
+                    to_write = [str(info.ue_id), str(info.kcell), str(info.sid)]
+                    for item in info.cqi_all:
+                        to_write.append(str(item[0]))
+                        to_write.append(str(item[1]))
+                    to_write = to_write + [str(info.coord_x), str(info.coord_y)]
+                    line = ",".join(to_write)
+                    lines_write.append(line + "\n")
+        with open(ofname, "w") as fout:
+            fout.writelines(lines_write)
+
     def dump_to_csv_pf(self, ofname: str) -> None:
         """
         Calculate the RAN allocation to every UE with PF scheduling
@@ -562,12 +584,12 @@ def init_simulator(ues_num, rand_seed):
             cell_rate = []
             for i in range(n_cells):
                 cell_rate.append([int(row[2 * i + 1]), float(row[2 * i + 2])])
-            sort_by_cell = sorted(cell_rate, key=lambda x: x[0])
-            ue_info = UEInfo(ue_id, sort_by_cell, int(row[-2]), int(row[-1]))
             sort_by_rate = sorted(cell_rate, key=lambda x: -x[1])
             key_cell = sort_by_rate[0][0]
             if key_cell >= n_cells:
                 continue
+            sort_by_cell = sorted(cell_rate, key=lambda x: x[0])
+            ue_info = UEInfo(ue_id, sort_by_cell, int(row[-2]), int(row[-1]), key_cell)
             cell_all_ues[key_cell].append(ue_info)
     sim = Simulator(n_cells, n_slices)
     random.seed(rand_seed)
@@ -608,31 +630,39 @@ N_CELLS = 5
 MAX_RAND_UE = 10
 MACRO_CAPACITY = 5
 SMALL_CAPACITY = 1
-MACRO_UES = 7
+MACRO_UES = 5
 SMALL_UES = 1
-CASENAME = "mseven_"
+CASENAME = "macro_"
 is_pf_schedule = True
 n_samples = 20
 
 
+def gen_geo_conf():
+    ODIR = "./geo_conf/"
+    for i in range(n_samples):
+        ues_num = gen_slice_ue(i)
+        sim = init_simulator(ues_num, i)
+        sim.dump_to_geo_conf(ODIR + "geo_" + CASENAME + str(i) + ".csv")
+
+
 def debug_cases():
     ODIR = "./sample_data/"
-    for i in range(2, 3):
+    for i in range(0, 1):
         print(f"\nrandom seed: {i}")
         # ues_num = gen_screw_slice_ue(i)
         ues_num = gen_slice_ue(i)
         sim = init_simulator(ues_num, i)
         # log Origin
         sim.calculate_ran_weights()
-        sim.log_relative_demand("Origin, ")
+        sim.log_ran_weights("Origin, ")
         # log NaiveHO
         sim.naive_handover(True)
-        sim.log_relative_demand("NaiveHO, ")
+        sim.log_ran_weights("NaiveHO, ")
         sim.log_handover_record("NaiveHO, ")
         # log AwareHO
         sim = init_simulator(ues_num, i)
         sim.smart_handover_pf(True)
-        sim.log_relative_demand("AwareHO, ")
+        sim.log_ran_weights("AwareHO, ")
         sim.log_handover_record("AwareHO, ")
 
 
@@ -700,3 +730,4 @@ def gen_all_results():
 
 # gen_all_results()
 debug_cases()
+# gen_geo_conf()
