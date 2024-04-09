@@ -177,7 +177,7 @@ class Simulator:
         """
         ues_cfrom = self.get_cell_allues(cfrom)
         ues_sorted = sorted(
-            ues_cfrom, key=lambda x: -(x.get_cqi(cto) / x.get_cqi(cfrom))
+            ues_cfrom, key=lambda x: (-(x.get_cqi(cto) / x.get_cqi(cfrom)), -x.ue_id)
         )
         for i in range(n_ues):
             ue_top = ues_sorted[i]
@@ -223,7 +223,7 @@ class Simulator:
         else:
             ues_cfrom = list(self.ue_info[cfrom][sid].values())
         ues_sorted = sorted(
-            ues_cfrom, key=lambda x: -(x.get_cqi(cto) / x.get_cqi(cfrom))
+            ues_cfrom, key=lambda x: (-(x.get_cqi(cto) / x.get_cqi(cfrom)), -x.ue_id)
         )
         while demand_offload > 0:
             ue_top = ues_sorted[0]
@@ -248,7 +248,7 @@ class Simulator:
         """
         ues_cfrom = self.get_cell_allues(cfrom)
         ues_sorted = sorted(
-            ues_cfrom, key=lambda x: -(x.get_cqi(cto) / x.get_cqi(cfrom))
+            ues_cfrom, key=lambda x: (-(x.get_cqi(cto) / x.get_cqi(cfrom)), -x.ue_id)
         )
         from_capacity = MACRO_CAPACITY if cfrom == 0 else SMALL_CAPACITY
         to_capacity = MACRO_CAPACITY if cto == 0 else SMALL_CAPACITY
