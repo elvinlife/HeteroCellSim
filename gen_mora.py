@@ -6,6 +6,7 @@ import csv
 import random
 import numpy as np
 import matplotlib.pyplot as plt
+from random import randint
 
 
 class UEInfo:
@@ -55,6 +56,13 @@ class Simulator:
     def remove_ue_cell(self, cid, ue_id):
         self.cell_ues[cid].pop(ue_id)
 
+    def get_cell_util(self, cells):
+        util = 0
+        for cell in cells:
+            for _, ue in self.cell_ues[cell].items():
+                util += ue.weight * np.log(self.get_ue_metric(cell, ue))
+        return util
+
     def get_ue_metric(self, cid, ue_info, is_tp=True):
         """
         If the user is in @cid cell, we calculate the TP
@@ -77,6 +85,50 @@ class Simulator:
         else:
             return ratio * capacity
 
+    def maxtp_move(self, cfroms):
+        """
+        prev_cell: if move, the previous cell of the moved UE
+        start_cell: if move, the new cell of the moved UE
+        """
+        max_tp_ratio = 0
+        ueinfo_star = None
+        star_cell = -1
+        prev_cell = -1
+        for cfrom in cfroms:
+            for _, ueinfo in self.cell_ues[cfrom].items():
+                current_tp = self.get_ue_metric(cfrom, ueinfo)
+                for cid in range(self.n_cells):
+                    if cid != cfrom:
+                        tp = self.get_ue_metric(cid, ueinfo)
+                        if tp / current_tp > max_tp_ratio:
+                            max_tp_ratio = tp / current_tp
+                            ueinfo_star = ueinfo
+                            star_cell = cid
+                            prev_cell = cfrom
+        return (max_tp_ratio, ueinfo_star, star_cell, prev_cell)
+
+    def maxutil_move(self, cfroms):
+        max_util_ratio = 0
+        ueinfo_star = None
+        star_cell = -1
+        prev_cell = -1
+        for cfrom in cfroms:
+            for _, ueinfo in list(self.cell_ues[cfrom].items()):
+                for cid in range(self.n_cells):
+                    util_origin = self.get_cell_util([cfrom, cid])
+                    if cid != cfrom:
+                        self.remove_ue_cell(cfrom, ueinfo.ue_id)
+                        self.insert_ue_cell(cid, ueinfo)
+                        util_after = self.get_cell_util([cfrom, cid])
+                        self.remove_ue_cell(cid, ueinfo.ue_id)
+                        self.insert_ue_cell(cfrom, ueinfo)
+                        if util_after / util_origin > max_util_ratio:
+                            max_util_ratio = util_after / util_origin
+                            ueinfo_star = ueinfo
+                            star_cell = cid
+                            prev_cell = cfrom
+        return (max_util_ratio, ueinfo_star, star_cell, prev_cell)
+
     def insert_ue(self, ue_info):
         max_tp = 0
         insert_cell = -1
@@ -89,23 +141,30 @@ class Simulator:
         self.insert_ue_cell(insert_cell, ue_info)
         assert insert_cell != -1
         # move a UE from insert_cell that may achieve higher TP in another cell
-        max_tp_ratio = 0
-        ueinfo_star = None
-        cell_star = -1
-        for _, ueinfo in self.cell_ues[insert_cell].items():
-            current_tp = self.get_ue_metric(insert_cell, ueinfo)
-            for cid in range(self.n_cells):
-                if cid != insert_cell:
-                    tp = self.get_ue_metric(cid, ueinfo)
-                    if tp / current_tp > max_tp_ratio:
-                        max_tp_ratio = tp / current_tp
-                        ueinfo_star = ueinfo
-                        cell_star = cid
-        if max_tp_ratio < 1 or ueinfo_star == None:
+        (max_tp_ratio, ueinfo_star, star_cell, prev_cell) = self.maxtp_move(
+            [insert_cell]
+        )
+        if max_tp_ratio < 1:
             return
         # let's move a new user
-        self.remove_ue_cell(insert_cell, ueinfo_star.ue_id)
-        self.insert_ue_cell(cell_star, ueinfo_star)
+        self.remove_ue_cell(prev_cell, ueinfo_star.ue_id)
+        self.insert_ue_cell(star_cell, ueinfo_star)
+        # three more moves
+        for i in range(2):
+            (max_tp_ratio, ueinfo_star, star_cell, prev_cell) = self.maxtp_move(
+                [prev_cell, star_cell]
+            )
+            if max_tp_ratio < 1:
+                return
+            self.remove_ue_cell(prev_cell, ueinfo_star.ue_id)
+            self.insert_ue_cell(star_cell, ueinfo_star)
+        (max_util_ratio, ueinfo_star, star_cell, prev_cell) = self.maxutil_move(
+            [prev_cell, star_cell]
+        )
+        if max_util_ratio < 1:
+            return
+        self.remove_ue_cell(prev_cell, ueinfo_star.ue_id)
+        self.insert_ue_cell(star_cell, ueinfo_star)
 
     def log_ue_distribution(self):
         print("ue_distribution: ")
@@ -115,7 +174,7 @@ class Simulator:
 
     def dump_to_csv(self, ofname: str) -> None:
         data = {"ueid": [], "cell": [], "slice": [], "ran": [], "channel": []}
-        cell_tune = 1
+        cell_tune = 0
         macro_alloc = defaultdict(float)
         slice_ues = defaultdict(int)
         for cid in range(0, self.n_cells):
@@ -136,10 +195,11 @@ class Simulator:
             slice_ues[ue_info.sid] += 1
         for _, ue_info in self.cell_ues[cell_tune].items():
             data["ueid"].append(ue_info.ue_id)
-            data["cell"].append(cid)
+            data["cell"].append(cell_tune)
             data["slice"].append(ue_info.sid)
-            data["channel"].append(ue_info.get_cqi(cid))
+            data["channel"].append(ue_info.get_cqi(cell_tune))
             data["ran"].append(macro_alloc[ue_info.sid] / slice_ues[ue_info.sid])
+            # data["ran"].append(self.get_ue_metric(cell_tune, ue_info, False))
         df = pd.DataFrame(data)
         df.to_csv(ofname, index=False)
 
@@ -225,9 +285,11 @@ def init_simulator(ues_num, rand_seed):
         ueid = 0
         slice_uenum = np.sum(ues_num, axis=0)
         for sid in range(n_slices):
+            slice_ue = slice_uenum[sid] + randint(-10, 10)
             for k in range(ues_num[cid][sid]):
                 cell_ues[ueid].set_sid(sid)
-                cell_ues[ueid].set_weight(1 / slice_uenum[sid])
+                cell_ues[ueid].set_weight(1 / slice_ue)
+                # cell_ues[ueid].set_weight(1)
                 sim.insert_ue(cell_ues[ueid])
                 ueid += 1
     return sim
@@ -245,7 +307,15 @@ def print_ranalloc():
             for _, row in df_slice.iterrows():
                 slice_ran += row["ran"]
             slices_ran.append(slice_ran)
-        print(slices_ran)
+        print(f"slice: {slices_ran}")
+        cells_ran = []
+        for cid in range(N_CELLS):
+            cell_ran = 0
+            df_cell = df[df["cell"] == cid]
+            for _, row in df_cell.iterrows():
+                cell_ran += row["ran"]
+            cells_ran.append(cell_ran)
+        print(f"cell: {cells_ran}")
 
 
 N_SLICES = 5
